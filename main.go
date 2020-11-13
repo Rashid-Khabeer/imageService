@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image"
+	"image/jpeg"
+	_ "image/jpeg"
 	"image/png"
 	"io"
 	"io/ioutil"
@@ -24,7 +26,7 @@ func main() {
 	app.Put("/uploadImage", uploadFile)
 	app.Get("/getImage/{img}", getImage)
 	app.Get("/deleteImage/{img}", deleteImage)
-	app.Run(iris.TLS("localhost:8081", "cert.pem", "key.pem"))
+	app.Run(iris.TLS("0.0.0.0:8081", "cert.pem", "key.pem"))
 }
 
 func homePage(ctx iris.Context) {
@@ -33,13 +35,13 @@ func homePage(ctx iris.Context) {
 }
 
 func uploadFile(ctx iris.Context) {
+	fmt.Println("Hit Upload File")
 	file, header, error := ctx.FormFile("myImage")
 	if error != nil {
 		fmt.Println("Error getting file")
 		return
 	}
-	defer file.Close()
-	saveOriginal := ctx.PostValue("saveoriginal")
+	saveOriginal := ctx.PostValue("saveOriginal")
 	width, _ := ctx.PostValues("width")
 	height, _ := ctx.PostValues("height")
 	scaleS := ctx.PostValue("scale")
@@ -49,17 +51,6 @@ func uploadFile(ctx iris.Context) {
 	ctx.JSON(iris.Map{
 		"imageName": encodedHex,
 	})
-	if _, err := os.Stat("uploads/"); os.IsNotExist(err) {
-		err := os.Mkdir("uploads", 0755)
-		if err != nil {
-			fmt.Println("Error Making Directory")
-		}
-	}
-	im, _, err := image.Decode(file)
-	if err != nil {
-		fmt.Println("Error Converting file to image")
-		return
-	}
 	res := false
 	if len(height) > 0 && len(width) > 0 {
 		res = true
@@ -81,9 +72,16 @@ func uploadFile(ctx iris.Context) {
 		}
 	}
 	go func() {
+		defer file.Close()
+		if _, err := os.Stat("uploads/"); os.IsNotExist(err) {
+			err := os.Mkdir("uploads", 0755)
+			if err != nil {
+				fmt.Println("Error Making Directory")
+			}
+		}
 		if res || doScale {
 			if saveOriginal == "true" {
-				dst, err := os.Create("uploads/" + encodedHex + "/original")
+				dst, err := os.Create("uploads/" + encodedHex + "/" + "original")
 				if err != nil {
 					fmt.Println(err)
 					return
@@ -92,6 +90,31 @@ func uploadFile(ctx iris.Context) {
 					fmt.Println("Error Copying image")
 					return
 				}
+			}
+			file.Seek(0, 0)
+			contentType := header.Header.Get("Content-Type")
+			var im image.Image
+			if contentType == "image/jpeg" {
+				fmt.Println("jpeg")
+				ima, err := jpeg.Decode(file)
+				if err != nil {
+					fmt.Println(err)
+					fmt.Println("Error Converting file to image")
+					return
+				}
+				im = ima
+			} else if contentType == "image/png" {
+				fmt.Println("png")
+				ima, err := png.Decode(file)
+				if err != nil {
+					fmt.Println(err)
+					fmt.Println("Error Converting file to image")
+					return
+				}
+				im = ima
+			} else {
+				ctx.WriteString("Image Type not supported")
+				return
 			}
 			if res {
 				for index, a := range width {
@@ -105,7 +128,8 @@ func uploadFile(ctx iris.Context) {
 					if err != nil {
 						fmt.Println("Error while saving resize")
 					}
-					png.Encode(dst, newImg)
+					jpeg.Encode(dst, newImg, nil)
+					dst.Close()
 				}
 			}
 			if doScale {
@@ -119,7 +143,8 @@ func uploadFile(ctx iris.Context) {
 				wi := uint(im.Bounds().Max.X) * scale
 				hi := uint(im.Bounds().Max.Y) * scale
 				newImg := resize.Resize(wi, hi, im, resize.Lanczos3)
-				png.Encode(dst, newImg)
+				jpeg.Encode(dst, newImg, nil)
+				dst.Close()
 			}
 		} else {
 			dst, err := os.Create("uploads/" + encodedHex)
@@ -130,6 +155,7 @@ func uploadFile(ctx iris.Context) {
 				fmt.Println("Error saving file")
 				return
 			}
+			dst.Close()
 		}
 		for index, img := range images {
 			if img == encodedHex {
@@ -137,7 +163,6 @@ func uploadFile(ctx iris.Context) {
 			}
 		}
 	}()
-	fmt.Println("Hit Upload File")
 }
 
 func getImage(ctx iris.Context) {
@@ -171,8 +196,7 @@ func getImage(ctx iris.Context) {
 			}
 			if !resiz && !sc {
 				f := files[0]
-				ctx.WriteString(f.Name())
-				// ctx.SendFile(src+"/"+f.Name(), f.Name())
+				ctx.SendFile(src+"/"+f.Name(), f.Name())
 			} else {
 				var rFileName string
 				if resiz {
@@ -184,9 +208,8 @@ func getImage(ctx iris.Context) {
 				flag := true
 				for _, f := range files {
 					if f.Name() == rFileName {
-						ctx.WriteString(f.Name())
 						flag = false
-						// ctx.SendFile(src+"/"+f.Name(), f.Name())
+						ctx.SendFile(src+"/"+f.Name(), f.Name())
 						break
 					}
 				}
@@ -197,8 +220,7 @@ func getImage(ctx iris.Context) {
 				}
 			}
 		} else {
-			ctx.WriteString(imgName)
-			// ctx.SendFile(src, imgName)
+			ctx.SendFile(src, imgName)
 		}
 	}
 	fmt.Println("Hit getImage")
@@ -212,6 +234,7 @@ func fireProblem(ctx iris.Context) {
 }
 
 func deleteImage(ctx iris.Context) {
+	fmt.Println("Hit delete Image")
 	imgName := ctx.Params().Get("img")
 	src := "uploads/" + imgName
 	if info, err := os.Stat(src); err == nil && info.IsDir() {
@@ -231,5 +254,4 @@ func deleteImage(ctx iris.Context) {
 	ctx.JSON(iris.Map{
 		"Message": "Deleted",
 	})
-	fmt.Println("Hit delete Image")
 }
